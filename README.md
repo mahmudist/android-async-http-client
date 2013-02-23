@@ -22,6 +22,7 @@ Then use it anywhere you want
 Map<String, String> params = new HashMap<String, String>();
 params.put("username", username);
 params.put("profile-pic", profile_image_url);
+
 AsyncHttpClient.getInstance().post("http://shopaholic-api.herokuapp.com/signup", params, new ResponseHandler() {
     
     @Override

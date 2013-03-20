@@ -2,8 +2,9 @@ package com.stiggpwnz.asynchttpclient;
 
 import java.util.Map;
 import java.util.Map.Entry;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
-import org.apache.http.HttpEntity;
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
 import org.apache.http.client.methods.HttpGet;
@@ -25,98 +26,140 @@ import android.text.TextUtils;
 
 public class AsyncHttpClient {
 
+	private static final int TIMEOUT_CONNECTION = 6000;
+	private static final int TIMEOUT_SOCKET = 10000;
+
 	private static AsyncHttpClient instance;
 
-	public static void init() {
-		instance = new AsyncHttpClient();
+	public static void init(int threadPoolSize) {
+		instance = new AsyncHttpClient(threadPoolSize);
 	}
 
 	public static AsyncHttpClient getInstance() {
 		return instance;
 	}
 
-	private final HttpClient client = createNewThreadSafeHttpClient();
-	private final Handler handler = new Handler();
+	private final HttpClient httpClient = createNewThreadSafeHttpClient();
 
-	public HttpPost post(String url, Map<String, String> params, ResponseHandler responseHandler) {
+	private final Handler uiThreadHandler = new Handler();
+	private final ExecutorService executor;
+
+	private AsyncHttpClient(int threadPoolSize) {
+		executor = Executors.newFixedThreadPool(threadPoolSize);
+	}
+
+	public HttpPost post(String url, Map<String, String> params, boolean respondOnUiThread, AsyncResponseHandler responseHandler) {
 		if (TextUtils.isEmpty(url))
 			return null;
 
 		StringBuilder builder = appendParams(url, params);
 		HttpPost post = new HttpPost(builder.toString());
-		execute(responseHandler, post);
+		execute(responseHandler, post, respondOnUiThread);
 		return post;
 	}
 
-	public HttpGet get(String url, Map<String, String> params, ResponseHandler responseHandler) {
+	public HttpGet get(String url, Map<String, String> params, boolean respondOnUiThread, AsyncResponseHandler responseHandler) {
 		if (TextUtils.isEmpty(url))
 			return null;
 
 		StringBuilder builder = appendParams(url, params);
 		HttpGet get = new HttpGet(builder.toString());
-		execute(responseHandler, get);
+		execute(responseHandler, get, respondOnUiThread);
 		return get;
 	}
 
-	private void execute(final ResponseHandler responseHandler, final HttpUriRequest request) {
-		new Thread() {
+	private class RequestTask implements Runnable {
 
-			@Override
-			public void run() {
-				try {
-					HttpResponse httpResponse = client.execute(request);
-					if (responseHandler == null)
-						return;
+		private final AsyncResponseHandler responseHandler;
+		private final HttpUriRequest request;
+		private final boolean respondOnUiThread;
 
-					HttpEntity entity = httpResponse.getEntity();
-					final String response = EntityUtils.toString(entity);
+		public RequestTask(AsyncResponseHandler responseHandler, HttpUriRequest request, boolean respondOnUiThread) {
+			this.responseHandler = responseHandler;
+			this.request = request;
+			this.respondOnUiThread = respondOnUiThread;
+		}
 
-					if (responseHandler instanceof JsonResponseHandler) {
-						final JsonResponseHandler jsonResponseHandler = (JsonResponseHandler) responseHandler;
-						handler.post(new Runnable() {
+		@Override
+		public void run() {
+			try {
+				HttpResponse httpResponse = httpClient.execute(request);
+				if (responseHandler == null)
+					return;
 
-							@Override
-							public void run() {
-								try {
-									jsonResponseHandler.onSuccess(new JSONObject(response));
-								} catch (JSONException e) {
-									jsonResponseHandler.onFailure(e);
-								}
-							}
-						});
-					} else if (responseHandler instanceof JsonArrayResponseHandler) {
-						final JsonArrayResponseHandler jsonArrayResponseHandler = (JsonArrayResponseHandler) responseHandler;
-						handler.post(new Runnable() {
+				final String response = EntityUtils.toString(httpResponse.getEntity());
+
+				if (responseHandler instanceof JsonResponseHandler) {
+					final JsonResponseHandler jsonResponseHandler = (JsonResponseHandler) responseHandler;
+					if (respondOnUiThread) {
+						uiThreadHandler.post(new Runnable() {
 
 							@Override
 							public void run() {
-								try {
-									jsonArrayResponseHandler.onSuccess(new JSONArray(response));
-								} catch (JSONException e) {
-									jsonArrayResponseHandler.onFailure(e);
-								}
+								respondWithJson(response, jsonResponseHandler);
 							}
 						});
 					} else {
-						handler.post(new Runnable() {
+						respondWithJson(response, jsonResponseHandler);
+					}
+				} else if (responseHandler instanceof JsonArrayResponseHandler) {
+					final JsonArrayResponseHandler jsonArrayResponseHandler = (JsonArrayResponseHandler) responseHandler;
+					if (respondOnUiThread) {
+						uiThreadHandler.post(new Runnable() {
 
 							@Override
 							public void run() {
-								responseHandler.onSuccess(response);
+								respondWithJsonArray(response, jsonArrayResponseHandler);
 							}
 						});
+					} else {
+						respondWithJsonArray(response, jsonArrayResponseHandler);
 					}
-				} catch (final Exception e) {
-					handler.post(new Runnable() {
+				} else if (responseHandler instanceof StringResponseHandler) {
+					final StringResponseHandler stringResponseHandler = (StringResponseHandler) responseHandler;
+					if (respondOnUiThread) {
+						uiThreadHandler.post(new Runnable() {
 
-						@Override
-						public void run() {
-							responseHandler.onFailure(e);
-						}
-					});
+							@Override
+							public void run() {
+								stringResponseHandler.onSuccess(response);
+							}
+						});
+					} else {
+						stringResponseHandler.onSuccess(response);
+					}
 				}
-			};
-		}.start();
+			} catch (final Exception e) {
+				uiThreadHandler.post(new Runnable() {
+
+					@Override
+					public void run() {
+						responseHandler.onFailure(e);
+					}
+				});
+			}
+		}
+
+		private void respondWithJson(final String response, final JsonResponseHandler jsonResponseHandler) {
+			try {
+				jsonResponseHandler.onSuccess(new JSONObject(response));
+			} catch (JSONException e) {
+				jsonResponseHandler.onFailure(e);
+			}
+		}
+
+		private void respondWithJsonArray(final String response, final JsonArrayResponseHandler jsonArrayResponseHandler) {
+			try {
+				jsonArrayResponseHandler.onSuccess(new JSONArray(response));
+			} catch (JSONException e) {
+				jsonArrayResponseHandler.onFailure(e);
+			}
+		}
+	}
+
+	private void execute(AsyncResponseHandler responseHandler, HttpUriRequest request, boolean respondOnUiThread) {
+		RequestTask requestTask = new RequestTask(responseHandler, request, respondOnUiThread);
+		executor.submit(requestTask);
 	}
 
 	private static StringBuilder appendParams(String url, Map<String, String> params) {
@@ -129,27 +172,25 @@ public class AsyncHttpClient {
 		for (Entry<String, String> entry : params.entrySet()) {
 			builder.append(entry.getKey()).append("=").append(entry.getValue()).append("&");
 		}
-		builder.deleteCharAt(builder.length() - 1);
+		builder.setLength(builder.length() - 1);
 		return builder;
 	}
 
-	public static interface ResponseHandler {
-		public void onSuccess(String response);
-
+	public static interface AsyncResponseHandler {
 		public void onFailure(Exception e);
 	}
 
-	public static interface JsonResponseHandler extends ResponseHandler {
+	public static interface JsonResponseHandler extends AsyncResponseHandler {
 		public void onSuccess(JSONObject jsonObject);
-
 	}
 
-	public static interface JsonArrayResponseHandler extends ResponseHandler {
+	public static interface JsonArrayResponseHandler extends AsyncResponseHandler {
 		public void onSuccess(JSONArray jsonArray);
 	}
 
-	private static final int TIMEOUT_CONNECTION = 6000;
-	private static final int TIMEOUT_SOCKET = 10000;
+	public static interface StringResponseHandler extends AsyncResponseHandler {
+		public void onSuccess(String response);
+	}
 
 	private static HttpClient createNewThreadSafeHttpClient() {
 		HttpClient defaultHttpClient = new DefaultHttpClient();
@@ -159,6 +200,10 @@ public class AsyncHttpClient {
 		SchemeRegistry registry = defaultHttpClient.getConnectionManager().getSchemeRegistry();
 		ClientConnectionManager manager = new ThreadSafeClientConnManager(params, registry);
 		return new DefaultHttpClient(manager, params);
+	}
+
+	public HttpClient getHttpClient() {
+		return httpClient;
 	}
 
 }

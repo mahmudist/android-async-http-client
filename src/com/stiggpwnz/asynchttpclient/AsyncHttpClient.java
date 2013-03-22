@@ -2,8 +2,6 @@ package com.stiggpwnz.asynchttpclient;
 
 import java.util.Map;
 import java.util.Map.Entry;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 
 import org.apache.http.HttpResponse;
 import org.apache.http.client.HttpClient;
@@ -31,8 +29,8 @@ public class AsyncHttpClient {
 
 	private static AsyncHttpClient instance;
 
-	public static void init(int threadPoolSize) {
-		instance = new AsyncHttpClient(threadPoolSize);
+	public static void init() {
+		instance = new AsyncHttpClient();
 	}
 
 	public static AsyncHttpClient getInstance() {
@@ -40,25 +38,9 @@ public class AsyncHttpClient {
 	}
 
 	private final HttpClient httpClient = createNewThreadSafeHttpClient();
-
 	private final Handler uiThreadHandler = new Handler();
-	private final ExecutorService executor;
 
-	private AsyncHttpClient(int threadPoolSize) {
-		executor = Executors.newFixedThreadPool(threadPoolSize);
-	}
-
-	public HttpPost post(String url, Map<String, String> params, boolean respondOnUiThread, AsyncResponseHandler responseHandler) {
-		if (TextUtils.isEmpty(url))
-			return null;
-
-		StringBuilder builder = appendParams(url, params);
-		HttpPost post = new HttpPost(builder.toString());
-		execute(responseHandler, post, respondOnUiThread);
-		return post;
-	}
-
-	public HttpGet get(String url, Map<String, String> params, boolean respondOnUiThread, AsyncResponseHandler responseHandler) {
+	public HttpGet get(String url, Map<String, String> params, boolean respondOnUiThread, ResponseHandler responseHandler) {
 		if (TextUtils.isEmpty(url))
 			return null;
 
@@ -68,13 +50,46 @@ public class AsyncHttpClient {
 		return get;
 	}
 
+	public HttpPost post(String url, Map<String, String> params, boolean respondOnUiThread, ResponseHandler responseHandler) {
+		if (TextUtils.isEmpty(url))
+			return null;
+
+		StringBuilder builder = appendParams(url, params);
+		HttpPost post = new HttpPost(builder.toString());
+		execute(responseHandler, post, respondOnUiThread);
+		return post;
+	}
+
+	public HttpClient getHttpClient() {
+		return httpClient;
+	}
+
+	private static StringBuilder appendParams(String url, Map<String, String> params) {
+		StringBuilder builder = new StringBuilder(url);
+
+		if (params == null || params.isEmpty())
+			return builder;
+
+		builder.append("?");
+		for (Entry<String, String> entry : params.entrySet()) {
+			builder.append(entry.getKey()).append("=").append(entry.getValue()).append("&");
+		}
+		builder.setLength(builder.length() - 1);
+		return builder;
+	}
+
+	private void execute(ResponseHandler responseHandler, HttpUriRequest request, boolean respondOnUiThread) {
+		RequestTask requestTask = new RequestTask(responseHandler, request, respondOnUiThread);
+		new Thread(requestTask).start();
+	}
+
 	private class RequestTask implements Runnable {
 
-		private final AsyncResponseHandler responseHandler;
+		private final ResponseHandler responseHandler;
 		private final HttpUriRequest request;
 		private final boolean respondOnUiThread;
 
-		public RequestTask(AsyncResponseHandler responseHandler, HttpUriRequest request, boolean respondOnUiThread) {
+		public RequestTask(ResponseHandler responseHandler, HttpUriRequest request, boolean respondOnUiThread) {
 			this.responseHandler = responseHandler;
 			this.request = request;
 			this.respondOnUiThread = respondOnUiThread;
@@ -157,38 +172,19 @@ public class AsyncHttpClient {
 		}
 	}
 
-	private void execute(AsyncResponseHandler responseHandler, HttpUriRequest request, boolean respondOnUiThread) {
-		RequestTask requestTask = new RequestTask(responseHandler, request, respondOnUiThread);
-		executor.submit(requestTask);
-	}
-
-	private static StringBuilder appendParams(String url, Map<String, String> params) {
-		StringBuilder builder = new StringBuilder(url);
-
-		if (params == null || params.isEmpty())
-			return builder;
-
-		builder.append("?");
-		for (Entry<String, String> entry : params.entrySet()) {
-			builder.append(entry.getKey()).append("=").append(entry.getValue()).append("&");
-		}
-		builder.setLength(builder.length() - 1);
-		return builder;
-	}
-
-	public static interface AsyncResponseHandler {
+	public static interface ResponseHandler {
 		public void onFailure(Exception e);
 	}
 
-	public static interface JsonResponseHandler extends AsyncResponseHandler {
+	public static interface JsonResponseHandler extends ResponseHandler {
 		public void onSuccess(JSONObject jsonObject);
 	}
 
-	public static interface JsonArrayResponseHandler extends AsyncResponseHandler {
+	public static interface JsonArrayResponseHandler extends ResponseHandler {
 		public void onSuccess(JSONArray jsonArray);
 	}
 
-	public static interface StringResponseHandler extends AsyncResponseHandler {
+	public static interface StringResponseHandler extends ResponseHandler {
 		public void onSuccess(String response);
 	}
 
@@ -200,10 +196,6 @@ public class AsyncHttpClient {
 		SchemeRegistry registry = defaultHttpClient.getConnectionManager().getSchemeRegistry();
 		ClientConnectionManager manager = new ThreadSafeClientConnManager(params, registry);
 		return new DefaultHttpClient(manager, params);
-	}
-
-	public HttpClient getHttpClient() {
-		return httpClient;
 	}
 
 }

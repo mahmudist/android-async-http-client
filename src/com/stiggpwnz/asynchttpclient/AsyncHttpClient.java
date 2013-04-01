@@ -24,8 +24,8 @@ import android.text.TextUtils;
 
 public class AsyncHttpClient {
 
-	private static final int TIMEOUT_CONNECTION = 6000;
-	private static final int TIMEOUT_SOCKET = 10000;
+	private static final int TIMEOUT_CONNECTION = 3000;
+	private static final int TIMEOUT_SOCKET = 5000;
 
 	private static AsyncHttpClient instance;
 
@@ -158,16 +158,36 @@ public class AsyncHttpClient {
 		private void respondWithJson(final String response, final JsonResponseHandler jsonResponseHandler) {
 			try {
 				jsonResponseHandler.onSuccess(new JSONObject(response));
-			} catch (JSONException e) {
-				jsonResponseHandler.onFailure(e);
+			} catch (final JSONException e) {
+				if (respondOnUiThread) {
+					jsonResponseHandler.onFailure(e);
+				} else {
+					uiThreadHandler.post(new Runnable() {
+
+						@Override
+						public void run() {
+							jsonResponseHandler.onFailure(e);
+						}
+					});
+				}
 			}
 		}
 
 		private void respondWithJsonArray(final String response, final JsonArrayResponseHandler jsonArrayResponseHandler) {
 			try {
 				jsonArrayResponseHandler.onSuccess(new JSONArray(response));
-			} catch (JSONException e) {
-				jsonArrayResponseHandler.onFailure(e);
+			} catch (final JSONException e) {
+				if (respondOnUiThread) {
+					jsonArrayResponseHandler.onFailure(e);
+				} else {
+					uiThreadHandler.post(new Runnable() {
+
+						@Override
+						public void run() {
+							jsonArrayResponseHandler.onFailure(e);
+						}
+					});
+				}
 			}
 		}
 	}

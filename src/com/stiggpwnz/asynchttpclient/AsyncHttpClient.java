@@ -24,8 +24,8 @@ import android.text.TextUtils;
 
 public class AsyncHttpClient {
 
-	private static final int TIMEOUT_CONNECTION = 3000;
-	private static final int TIMEOUT_SOCKET = 5000;
+	private static final int TIMEOUT_CONNECTION = 6000;
+	private static final int TIMEOUT_SOCKET = 10000;
 
 	private static AsyncHttpClient instance;
 
